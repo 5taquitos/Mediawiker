@@ -3,7 +3,6 @@ pythonver = sys.version_info[0]
 
 import client
 import page
-import compatibility
 
 
 def range_compat(number_value):
@@ -14,6 +13,7 @@ def range_compat(number_value):
 
 
 class List(object):
+
     def __init__(self, site, list_name, prefix, limit=None, return_values=None, max_items=None, *args, **kwargs):
         # NOTE: Fix limit
         self.site = site
@@ -107,7 +107,7 @@ class List(object):
                     yield _prefix + key, value
         else:
             for key, value in kwargs.iteritems():
-                if value is not None:
+                if value is not None and value is not False:
                     yield _prefix + key, value
 
     @staticmethod
@@ -126,6 +126,7 @@ class List(object):
 
 
 class GeneratorList(List):
+
     def __init__(self, site, list_name, prefix, *args, **kwargs):
         List.__init__(self, site, list_name, prefix, *args, **kwargs)
 
@@ -160,7 +161,7 @@ class GeneratorList(List):
     def load_chunk(self):
         # Put this here so that the constructor does not fail
         # on uninitialized sites
-        self.args['iiprop'] = compatibility.iiprop(self.site.version)
+        self.args['iiprop'] = 'timestamp|user|comment|url|size|sha1|metadata|archivename'
         return List.load_chunk(self)
 
 
@@ -169,7 +170,7 @@ class Category(page.Page, GeneratorList):
     def __init__(self, site, name, info=None, namespace=None):
         page.Page.__init__(self, site, name, info)
         kwargs = {}
-        kwargs.update((compatibility.cmtitle(self, self.site.require(1, 12, raise_error=False), prefix='gcm'), ))
+        kwargs['gcmtitle'] = self.name
         if namespace:
             kwargs['gcmnamespace'] = namespace
         GeneratorList.__init__(self, site, 'categorymembers', 'cm', **kwargs)
@@ -177,9 +178,11 @@ class Category(page.Page, GeneratorList):
     def __repr__(self):
         return "<Category object '%s' for %s>" % (self.name.encode('utf-8'), self.site)
 
-    def members(self, prop='ids|title', namespace=None, sort='sortkey', dir='asc', start=None, end=None, generator=True):
+    def members(self, prop='ids|title', namespace=None, sort='sortkey',
+                dir='asc', start=None, end=None, generator=True):
         prefix = self.get_prefix('cm', generator)
-        kwargs = dict(self.generate_kwargs(prefix, prop=prop, namespace=namespace, sort=sort, dir=dir, start=start, end=end, *(compatibility.cmtitle(self, self.site.require(1, 12, raise_error=False)), )))
+        kwargs = dict(self.generate_kwargs(prefix, prop=prop, namespace=namespace,
+                                           sort=sort, dir=dir, start=start, end=end, title=self.name))
         return self.get_list(generator)(self.site, 'categorymembers', 'cm', **kwargs)
 
 
@@ -194,7 +197,8 @@ class PageList(GeneratorList):
         if start:
             kwargs['apfrom'] = start
 
-        GeneratorList.__init__(self, site, 'allpages', 'ap', apnamespace=str(namespace), apfilterredir=redirects, **kwargs)
+        GeneratorList.__init__(self, site, 'allpages', 'ap',
+                               apnamespace=str(namespace), apfilterredir=redirects, **kwargs)
 
     def __getitem__(self, name):
         return self.get(name, None)
@@ -208,13 +212,13 @@ class PageList(GeneratorList):
             return page.Page(self.site, self.site.namespaces[self.namespace] + ':' + name, info)
         else:
             # Guessing page class
-            namespace = self.guess_namespace(name)
-            if namespace == 14:
-                return Category(self.site, name, info)
-            elif namespace == 6:
-                return page.Image(self.site, name, info)
-            else:
-                return page.Page(self.site, name, info)
+            if type(name) is not int:
+                namespace = self.guess_namespace(name)
+                if namespace == 14:
+                    return Category(self.site, name, info)
+                elif namespace == 6:
+                    return page.Image(self.site, name, info)
+            return page.Page(self.site, name, info)
 
     def guess_namespace(self, name):
         normal_name = page.Page.normalize_title(name)
@@ -238,25 +242,27 @@ class PageProperty(List):
 
     def set_iter(self, data):
         if pythonver >= 3:
-            for page in data['query']['pages'].values():
-                if page['title'] == self.page.name:
-                    self._iter = iter(page.get(self.list_name, ()))
+            for _page in data['query']['pages'].values():
+                if _page['title'] == self.page.name:
+                    self._iter = iter(_page.get(self.list_name, ()))
                     return
         else:
-            for page in data['query']['pages'].itervalues():
-                if page['title'] == self.page.name:
-                    self._iter = iter(page.get(self.list_name, ()))
+            for _page in data['query']['pages'].itervalues():
+                if _page['title'] == self.page.name:
+                    self._iter = iter(_page.get(self.list_name, ()))
                     return
         raise StopIteration
 
 
 class PagePropertyGenerator(GeneratorList):
+
     def __init__(self, page, prop, prefix, *args, **kwargs):
         GeneratorList.__init__(self, page.site, prop, prefix, titles=page.name, *args, **kwargs)
         self.page = page
 
 
 class RevisionsIterator(PageProperty):
+
     def load_chunk(self):
         if 'rvstartid' in self.args and 'rvstart' in self.args:
             del self.args['rvstart']

@@ -19,6 +19,7 @@ import uuid
 # http://www.sublimetext.com/docs/2/api_reference.html
 # http://www.sublimetext.com/docs/3/api_reference.html
 # sublime.message_dialog
+# SublimeText
 
 st_version = 2
 if int(sublime.version()) > 3000:
@@ -64,8 +65,10 @@ if pythonver >= 3:
     # else:
     #     from . import mwclient
     from . import mwclient
+    from .mwclient import requests
 else:
     import mwclient
+    from mwclient import requests
 
 CATEGORY_NAMESPACE = 14  # category namespace number
 IMAGE_NAMESPACE = 6  # image namespace number
@@ -97,50 +100,7 @@ def mw_deco(value):
     return value
 
 
-def mw_get_digest_header(header, username, password, path):
-    HEADER_ATTR_PATTERN = r'([\w\s]+)=\"?([^".]*)\"?'
-    METHOD = "POST"
-    header_attrs = {}
-    hprms = header.split(', ')
-    for hprm in hprms:
-        params = re.findall(HEADER_ATTR_PATTERN, hprm)
-        for param in params:
-            header_attrs[param[0]] = param[1]
-
-    cnonce = str(uuid.uuid4())  # random clients string..
-    nc = '00000001'
-    realm = header_attrs['Digest realm']
-    nonce = header_attrs['nonce']
-    qop = header_attrs.get('qop', 'auth')
-    digest_uri = header_attrs.get('uri', path)
-    algorithm = header_attrs.get('algorithm', 'MD5')
-    # TODO: ?
-    # opaque = header_attrs.get('opaque', '')
-    entity_body = ''  # TODO: ?
-
-    if algorithm == 'MD5':
-        ha1 = md5(mw_enco('%s:%s:%s' % (username, realm, password))).hexdigest()
-    elif algorithm == 'MD5-Sess':
-        ha1 = md5(mw_enco('%s:%s:%s' % (md5(mw_enco('%s:%s:%s' % (username, realm, password))), nonce, cnonce))).hexdigest()
-
-    if 'auth-int' in qop:
-        ha2 = md5(mw_enco('%s:%s:%s' % (METHOD, digest_uri, md5(entity_body)))).hexdigest()
-    elif 'auth' in qop:
-        ha2 = md5(mw_enco('%s:%s' % (METHOD, digest_uri))).hexdigest()
-
-    if 'auth' in qop or 'auth-int' in qop:
-        response = md5(mw_enco('%s:%s:%s:%s:%s:%s' % (ha1, nonce, nc, cnonce, qop, ha2))).hexdigest()
-    else:
-        response = md5(mw_enco('%s:%s:%s' % (ha1, nonce, ha2))).hexdigest()
-
-    # auth = 'username="%s", realm="%s", nonce="%s", uri="%s", response="%s", opaque="%s", qop="%s", nc=%s, cnonce="%s"' % (username, realm, nonce, digest_uri, response, opaque, qop, nc, cnonce)
-    auth = 'username="%s", realm="%s", nonce="%s", uri="%s", response="%s", qop="%s", nc=%s, cnonce="%s"' % (username, realm, nonce, digest_uri, response, qop, nc, cnonce)
-    return auth
-
-
 def mw_get_connect(password=''):
-    DIGEST_REALM = 'Digest realm'
-    BASIC_REALM = 'Basic realm'
     site_name_active = mw_get_setting('mediawiki_site_active')
     site_list = mw_get_setting('mediawiki_site')
     site_params = site_list[site_name_active]
@@ -161,47 +121,45 @@ def mw_get_connect(password=''):
         sublime.message_dialog('Connection with proxy: %s %s' % (host, path))
 
     try:
-        sitecon = mwclient.Site(host=host, path=path)
-    except mwclient.HTTPStatusError as exc:
-        e = exc.args if pythonver >= 3 else exc
         is_use_http_auth = site_params.get('use_http_auth', False)
-        http_auth_login = site_params.get('http_auth_login', '')
-        http_auth_password = site_params.get('http_auth_password', '')
-        if e[0] == 401 and is_use_http_auth and http_auth_login:
-            http_auth_header = e[1].getheader('www-authenticate')
-            custom_headers = {}
-            realm = None
-            if http_auth_header.startswith(BASIC_REALM):
-                realm = BASIC_REALM
-            elif http_auth_header.startswith(DIGEST_REALM):
-                realm = DIGEST_REALM
-
-            if realm is not None:
-                if realm == BASIC_REALM:
-                    auth = mw_deco(base64.standard_b64encode(mw_enco('%s:%s' % (http_auth_login, http_auth_password))))
-                    custom_headers = {'Authorization': 'Basic %s' % auth}
-                elif realm == DIGEST_REALM:
-                    auth = mw_get_digest_header(http_auth_header, http_auth_login, http_auth_password, '%sapi.php' % path)
-                    custom_headers = {'Authorization': 'Digest %s' % auth}
-
-                if custom_headers:
-                    sitecon = mwclient.Site(host=host, path=path, custom_headers=custom_headers)
+        if is_use_http_auth:
+            DIGEST_REALM = 'Digest realm'
+            BASIC_REALM = 'Basic realm'
+            http_auth_login = site_params.get('http_auth_login', '')
+            http_auth_password = site_params.get('http_auth_password', '')
+            url = 'http://%s' % host if not is_https else 'https://%s' % host
+            r = requests.get(url)
+            if r.status_code == 401:
+                http_auth_header = r.headers['WWW-Authenticate']
+                realm = None
+                if http_auth_header.startswith(BASIC_REALM):
+                    realm = BASIC_REALM
+                elif http_auth_header.startswith(DIGEST_REALM):
+                    realm = DIGEST_REALM
             else:
-                error_message = 'HTTP connection failed: Unknown realm.'
-                sublime.status_message(error_message)
-                raise Exception(error_message)
+                raise Exception('HTTP connection failed.')
+
+            # works if requests in mwclient dir
+            if realm == BASIC_REALM:
+                auth = requests.auth.HTTPBasicAuth(http_auth_login, http_auth_password)
+            elif realm == DIGEST_REALM:
+                auth = requests.auth.HTTPDigestAuth(http_auth_login, http_auth_password)
+            sitecon = mwclient.Site(host=host, path=path, auth=auth)
         else:
-            sublime.status_message('HTTP connection failed: %s' % e[1])
-            raise Exception('HTTP connection failed.')
+            sitecon = mwclient.Site(host=host, path=path)
+    except Exception as e:  # TODO!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        sublime.status_message('HTTP connection failed: %s' % e)
+        raise Exception('HTTP connection failed.')
 
     # if login is not empty - auth required
     if username:
         try:
             sitecon.login(username=username, password=password, domain=domain)
             sublime.status_message('Logon successfully.')
-        except mwclient.LoginError as e:
+        except mwclient.LoginError as exc:
+            e = exc.args if pythonver >= 3 else exc
             sublime.status_message('Login failed: %s' % e[1]['result'])
-            return
+            raise
     else:
         sublime.status_message('Connection without authorization')
     return sitecon
@@ -1352,7 +1310,8 @@ class MediawikerFavoritesOpenCommand(sublime_plugin.WindowCommand):
 
 class MediawikerLoad(sublime_plugin.EventListener):
     def on_activated(self, view):
-        if view.settings().get('syntax').endswith('Mediawiker/Mediawiki.tmLanguage'):
+        current_syntax = view.settings().get('syntax')
+        if current_syntax is not None and current_syntax.endswith('Mediawiker/Mediawiki.tmLanguage'):
             # Mediawiki mode
             view.settings().set('mediawiker_is_here', True)
             view.settings().set('mediawiker_wiki_instead_editor', mw_get_setting('mediawiker_wiki_instead_editor'))
